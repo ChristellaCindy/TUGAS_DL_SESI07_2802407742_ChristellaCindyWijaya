@@ -1,6 +1,7 @@
 torch
 torchvision
 torchmetrics[image]
+torch-fidelity
 scikit-learn
 numpy
 matplotlib
