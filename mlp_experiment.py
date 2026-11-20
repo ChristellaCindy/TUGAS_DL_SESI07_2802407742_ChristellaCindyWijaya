@@ -1,4 +1,6 @@
 import os
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,14 +10,20 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 
 from data_setup import train_loader, val_loader, test_loader, test_data, classes, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
 os.makedirs("outputs/figs", exist_ok=True)
 
 # MLP Classifier
+set_seed(seed)
+
 mlp_enc = nn.Sequential(
     nn.Linear(784, 256),
     nn.ReLU(),
@@ -28,7 +36,7 @@ mlp_head = nn.Linear(64, 10).to(device)
 loss_fn = nn.CrossEntropyLoss()
 opt = optim.Adam(list(mlp_enc.parameters()) + list(mlp_head.parameters()), lr=1e-3)
 
-epochs = 14
+epochs = 15
 
 
 for epoch in range(epochs):
@@ -62,6 +70,8 @@ for epoch in range(epochs):
     val_acc = 100 * correct / total
     print(f"MLP Epoch {epoch+1:02d}/{epochs} | Loss: {total_loss/len(train_loader):.4f} | Val Acc: {val_acc:.2f}%")
 
+mlp_enc.eval()
+mlp_head.eval()
 correct, total = 0, 0
 with torch.no_grad():
     for imgs, labels in test_loader:
@@ -83,7 +93,7 @@ W3 = mlp_head.weight.detach()
 
 eye64 = torch.eye(64, device=device)
 ortho_err = (W3.T @ W3 - eye64).abs().max().item()
-print(f"{ortho_err:.4f}")
+print(f"Max Orthogonality Error: {ortho_err:.4f}")
 
 
 # Top-Down Weight Transposition
