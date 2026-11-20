@@ -54,8 +54,8 @@ dcgan_G.apply(init_weights)
 dcgan_D.apply(init_weights)
 
 bce_fn = nn.BCELoss()
-opt_dcgan_G = optim.Adam(dcgan_G.parameters(), lr=2e-4, beta=(0.5, 0.999))
-opt_dcgan_D = optim.Adam(dcgan_D.parameters(), lr=2e-4, beta=(0.5, 0.999))
+opt_dcgan_G = optim.Adam(dcgan_G.parameters(), lr=2e-4, betas=(0.5, 0.999))
+opt_dcgan_D = optim.Adam(dcgan_D.parameters(), lr=2e-4, betas=(0.5, 0.999))
 
 
 dcgan_epochs = 30
