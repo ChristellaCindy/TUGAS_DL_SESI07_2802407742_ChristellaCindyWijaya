@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,8 +11,13 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 
 from data_setup import train_loader, val_loader, test_loader, test_data, classes, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+set_seed(seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
@@ -21,7 +27,6 @@ sae_enc = nn.Sequential(
     nn.Linear(784, 256),
     nn.ReLU(),
     nn.Linear(256, 64),
-    nn.ReLU()
 ).to(device)
 
 sae_dec = nn.Sequential(
@@ -61,6 +66,8 @@ for epoch in range(sae_epochs):
         sae_opt.step()
         train_loss += loss.item()
 
+    ep_time = time.time() - t_start
+    
     sae_enc.eval()
     sae_dec.eval()
     val_mse = 0.0
@@ -69,7 +76,6 @@ for epoch in range(sae_epochs):
             x = imgs.view(imgs.size(0), -1).to(device)
             val_mse += mse_fn(sae_dec(sae_enc(x)), x).item()
 
-    ep_time = time.time() - t_start
     avg_train = train_loss / len(train_loader)
     avg_val = val_mse / len(val_loader)
 
@@ -130,11 +136,11 @@ with torch.no_grad():
         torch.cuda.synchronize()
     sae_latency = ((time.time() - t0) / 100) * 1000
 
-print("=== Evaluasi Sparse AE ===")
+print("=== Evaluasi Sparse AE (Linear + L1) ===")
 print("Dimensi Laten: 64")
 print(f"Lambda L1: {lam}")
 print(f"Training Time/Epoch: {sae_avg_time:.2f} detik")
-print(f"Latency: {sae_latency:.3f} ms")
+print(f"Latency Rekonstruksi (enc+dec, batch 64): {sae_latency:.3f} ms")
 print(f"Test MSE: {sae_mse:.5f}")
 print(f"Test PSNR: {sae_psnr:.2f} dB")
 print(f"Test SSIM: {sae_ssim:.4f}")
@@ -175,3 +181,80 @@ plt.suptitle("Citra Asli vs Sparse AE")
 plt.tight_layout()
 plt.savefig("outputs/figs/sparse_ae.png", dpi=150)
 plt.close()
+
+# Sparse AE dengan aktivasi ReLU di bottleneck (ReLU + L1)
+set_seed(seed)
+sae_relu_enc = nn.Sequential(
+    nn.Linear(784, 256),
+    nn.ReLU(),
+    nn.Linear(256, 64),
+    nn.ReLU()
+).to(device)
+
+sae_relu_dec = nn.Sequential(
+    nn.Linear(64, 256),
+    nn.ReLU(),
+    nn.Linear(256, 784),
+    nn.Sigmoid()
+).to(device)
+
+sae_relu_opt = optim.Adam(list(sae_relu_enc.parameters()) + list(sae_relu_dec.parameters()), lr=1e-3)
+
+for epoch in range(sae_epochs):
+    sae_relu_enc.train()
+    sae_relu_dec.train()
+    train_loss = 0.0
+
+    for imgs, _ in train_loader:
+        x = imgs.view(imgs.size(0), -1).to(device)
+
+        sae_relu_opt.zero_grad()
+        h = sae_relu_enc(x)
+        recon = sae_relu_dec(h)
+
+        loss = mse_fn(recon, x) + lam * h.abs().sum(dim=1).mean()
+        loss.backward()
+        sae_relu_opt.step()
+        train_loss += loss.item()
+
+    print(f"[ReLU+L1] Epoch {epoch+1:02d}/{sae_epochs} | Train Loss: {train_loss/len(train_loader):.5f}")
+
+psnr_metric.reset()
+ssim_metric.reset()
+sae_relu_enc.eval()
+sae_relu_dec.eval()
+
+mse_sum = 0.0
+total_pixels = 0
+h_relu_list = []
+
+with torch.no_grad():
+    for imgs, _ in test_loader:
+        x_img = imgs.to(device)
+        x_flat = x_img.view(x_img.size(0), -1)
+
+        h = sae_relu_enc(x_flat)
+        recon_img = sae_relu_dec(h).view(-1, 1, 28, 28)
+
+        mse_sum += F.mse_loss(recon_img, x_img, reduction="sum").item()
+        total_pixels += x_img.numel()
+        psnr_metric.update(recon_img, x_img)
+        ssim_metric.update(recon_img, x_img)
+        h_relu_list.append(h)
+
+sae_relu_mse = mse_sum / total_pixels
+sae_relu_psnr = psnr_metric.compute().item()
+sae_relu_ssim = ssim_metric.compute().item()
+
+all_h_relu = torch.cat(h_relu_list, dim=0)
+sae_relu_zero = (all_h_relu == 0).float().mean().item() * 100
+sae_relu_near_zero = (all_h_relu.abs() < 0.05).float().mean().item() * 100
+sae_relu_l1 = all_h_relu.abs().sum(dim=1).mean().item()
+
+print("=== Evaluasi Sparse AE (ReLU + L1) ===")
+print(f"Test MSE: {sae_relu_mse:.5f}")
+print(f"Test PSNR: {sae_relu_psnr:.2f} dB")
+print(f"Test SSIM: {sae_relu_ssim:.4f}")
+print(f"Aktivasi tepat 0: {sae_relu_zero:.1f}%")
+print(f"Aktivasi hampir 0 (<0.05): {sae_relu_near_zero:.1f}%")
+print(f"Rata-rata ||h||_1: {sae_relu_l1:.2f}")
