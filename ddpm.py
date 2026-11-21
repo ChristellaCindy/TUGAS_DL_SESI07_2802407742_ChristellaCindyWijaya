@@ -1,6 +1,7 @@
 import os
 import math
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,8 +11,13 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from data_setup import train_loader, val_loader, test_loader, test_data, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+set_seed(seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
@@ -19,8 +25,8 @@ os.makedirs("outputs/figs", exist_ok=True)
 
 
 T = 300
-beta = torch.linspace(1e-4, 0.035, T, device=device)
-alpha = 1.0 - beta
+betas = torch.linspace(1e-4, 0.035, T, device=device)
+alpha = 1.0 - betas
 alpha_bar = torch.cumprod(alpha, dim=0)
 
 def get_time_embeded(t, dim=64):
@@ -47,7 +53,6 @@ class MiniUNet(nn.Module):
             nn.SiLU(),
             nn.Linear(128, 128)
         )
-
         self.down1 = conv_block(1, 64)
         self.pool1 = nn.Conv2d(64, 64, 4, stride=2, padding=1)
         self.down2 = conv_block(64, 128)
@@ -85,8 +90,8 @@ ddpm_opt = optim.Adam(ddpm_net.parameters(), lr=2e-4)
 
 
 ddpm_epochs = 30
-ddpm_loss = []
-ddpm_times = []
+ddpm_losses = []
+ddpm_time = []
 
 for epoch in range(ddpm_epochs):
     t_start = time.time()
@@ -110,6 +115,8 @@ for epoch in range(ddpm_epochs):
         ddpm_opt.step()
         train_loss += loss.item()
 
+    ep_time = time.time() - t_start
+    
     ddpm_net.eval()
     val_loss = 0.0
 
@@ -124,16 +131,15 @@ for epoch in range(ddpm_epochs):
             x_t = torch.sqrt(ab) * x0 + torch.sqrt(1 - ab) * noise
             val_loss += mse_fn(ddpm_net(x_t, t), noise).item()
 
-    ep_time = time.time() - t_start
     avg_train = train_loss / len(train_loader)
     avg_val = val_loss / len(val_loader)
 
-    ddpm_loss.append(avg_train)
-    ddpm_times.append(ep_time)
+    ddpm_losses.append(avg_train)
+    ddpm_time.append(ep_time)
     print(f"Epoch {epoch+1:02d}/{ddpm_epochs} | Train MSE: {avg_train:.5f} | Val MSE: {avg_val:.5f} | Time: {ep_time:.2f}s")
 
-torch.save(ddpm_net.state_dict(), "outputs/models/ddpm.pt")
-np.save("outputs/models/ddpm_loss.npy", np.array(ddpm_loss))
+torch.save(ddpm_net.state_dict(), "outputs/models/ddpm_net.pt")
+np.save("outputs/models/ddpm_losses.npy", np.array(ddpm_losses))
 
 # Reverse
 def sample_ddpm(n):
@@ -147,15 +153,16 @@ def sample_ddpm(n):
             pred = ddpm_net(x, t)
             a = alpha[i]
             ab = alpha_bar[i]
-            b = beta[i]
+            b = betas[i]
 
             x = (1 / torch.sqrt(a)) * (x - ((1 - a) / torch.sqrt(1 - ab)) * pred)
             if i > 0:
                 var = b * (1 - alpha_bar[i - 1]) / (1 - ab)
                 x = x + torch.sqrt(var) * torch.randn_like(x)
+                
         return (x.clamp(-1, 1) + 1) / 2
 
-fid_metric = FrechetInceptionDistance(feature=2048).to(device)
+fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=False).to(device)
 
 with torch.no_grad():
     for imgs, _ in test_loader:
@@ -163,7 +170,7 @@ with torch.no_grad():
         fid_metric.update(real_rgb, real=True)
 
 # Generate sample baru untuk hitung FID Score
-torch.manual_seed(seed)
+set_seed(seed)
 n_total = len(test_data)
 n_done = 0
 while n_done < n_total:
@@ -174,7 +181,7 @@ while n_done < n_total:
     n_done += bs
 
 ddpm_fid = fid_metric.compute().item()
-ddpm_avg_time = np.mean(ddpm_times)
+ddpm_avg_time = np.mean(ddpm_time)
 
 # inference latency
 _ = sample_ddpm(64)
@@ -196,14 +203,14 @@ print("=== Evaluasi DDPM ===")
 print("Dimensi Laten: 28x28 (Dimensi Citra)")
 print(f"Timesteps (T): {T}")
 print(f"Training Time/Epoch: {ddpm_avg_time:.2f} detik")
-print(f"Latency: {ddpm_latency:.2f} ms")
+print(f"Latency Generation (prior->citra, batch 64): {ddpm_latency:.2f} ms")
 print("Test MSE: N/A (Denoising Model)")
 print("Test PSNR: N/A")
 print("Test SSIM: N/A")
 print(f"FID Score: {ddpm_fid:.2f}")
 
 
-torch.manual_seed(seed)
+set_seed(seed)
 ddpm_samples = sample_ddpm(16).squeeze(1).cpu()
 
 fig, axes = plt.subplots(4, 4, figsize=(5.5, 5.5))
@@ -218,7 +225,7 @@ plt.savefig("outputs/figs/ddpm_samples.png", dpi=150)
 plt.close()
 
 plt.figure(figsize=(7, 4))
-plt.plot(range(1, ddpm_epochs + 1), ddpm_loss, label="Noise Prediction MSE Loss")
+plt.plot(range(1, ddpm_epochs + 1), ddpm_losses, label="Noise Prediction MSE Loss")
 plt.xlabel("Epoch")
 plt.ylabel("MSE Loss")
 plt.title("Training Loss DDPM")
