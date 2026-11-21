@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,8 +10,13 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from data_setup import train_loader, test_loader, test_data, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+set_seed(seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
@@ -57,11 +63,10 @@ bce_fn = nn.BCELoss()
 opt_dcgan_G = optim.Adam(dcgan_G.parameters(), lr=2e-4, betas=(0.5, 0.999))
 opt_dcgan_D = optim.Adam(dcgan_D.parameters(), lr=2e-4, betas=(0.5, 0.999))
 
-
 dcgan_epochs = 30
-dcgan_g_loss = []
-dcgan_d_loss = []
-dcgan_times = []
+dcgan_g_losses = []
+dcgan_d_losses = []
+dcgan_time = []
 
 for epoch in range(dcgan_epochs):
     t_start = time.time()
@@ -102,19 +107,18 @@ for epoch in range(dcgan_epochs):
     avg_d = d_total / len(train_loader)
     avg_g = g_total / len(train_loader)
 
-    dcgan_d_loss.append(avg_d)
-    dcgan_g_loss.append(avg_g)
-    dcgan_times.append(ep_time)
+    dcgan_d_losses.append(avg_d)
+    dcgan_g_losses.append(avg_g)
+    dcgan_time.append(ep_time)
     print(f"Epoch {epoch+1:02d}/{dcgan_epochs} | D Loss: {avg_d:.4f} | G Loss: {avg_g:.4f} | Time: {ep_time:.2f}s")
 
 torch.save(dcgan_G.state_dict(), "outputs/models/dcgan_G.pt")
 torch.save(dcgan_D.state_dict(), "outputs/models/dcgan_D.pt")
 
-np.save("outputs/models/dcgan_g_loss.npy", np.array(dcgan_g_loss))
-np.save("outputs/models/dcgan_d_loss.npy", np.array(dcgan_d_loss))
+np.save("outputs/models/dcgan_g_losses.npy", np.array(dcgan_g_losses))
+np.save("outputs/models/dcgan_d_losses.npy", np.array(dcgan_d_losses))
 
-
-fid_metric = FrechetInceptionDistance(feature=2048).to(device)
+fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=False).to(device)
 dcgan_G.eval()
 
 with torch.no_grad():
@@ -122,8 +126,9 @@ with torch.no_grad():
         real_rgb = (imgs.to(device).clamp(0, 1) * 255).to(torch.uint8).repeat(1, 3, 1, 1)
         fid_metric.update(real_rgb, real=True)
 
+
 # Generate sampel baru untuk hitung FID Score
-torch.manual_seed(seed)
+set_seed(seed)
 n_total = len(test_data)
 n_done = 0
 
@@ -137,9 +142,10 @@ with torch.no_grad():
         n_done += bs
 
 dcgan_fid = fid_metric.compute().item()
-dcgan_avg_time = np.mean(dcgan_times)
+dcgan_avg_time = np.mean(dcgan_time)
 
-# inference Latency single-pass
+
+# Inference latency single-pass
 z_dcgan_64 = torch.randn(64, z_dim, device=device)
 with torch.no_grad():
     for _ in range(10):
@@ -157,14 +163,14 @@ with torch.no_grad():
 print("=== Evaluasi DCGAN ===")
 print("Dimensi Laten: 100 (Prior Noise)")
 print(f"Training Time/Epoch: {dcgan_avg_time:.2f} detik")
-print(f"Latency: {dcgan_latency:.3f} ms")
+print(f"Latency Generation (prior->citra, batch 64): {dcgan_latency:.3f} ms")
 print("Test MSE: N/A (Tanpa Encoder)")
 print("Test PSNR: N/A")
 print("Test SSIM: N/A")
 print(f"FID Score: {dcgan_fid:.2f}")
 
 
-torch.manual_seed(seed)
+set_seed(seed)
 with torch.no_grad():
     z_16 = torch.randn(16, z_dim, device=device)
     dcgan_samples = ((dcgan_G(z_16) + 1) / 2).clamp(0, 1).squeeze(1).cpu()
@@ -181,8 +187,8 @@ plt.savefig("outputs/figs/dcgan_samples.png", dpi=150)
 plt.close()
 
 plt.figure(figsize=(7, 4))
-plt.plot(range(1, dcgan_epochs + 1), dcgan_d_loss, label="Discriminator Loss")
-plt.plot(range(1, dcgan_epochs + 1), dcgan_g_loss, label="Generator Loss")
+plt.plot(range(1, dcgan_epochs + 1), dcgan_d_losses, label="Discriminator Loss")
+plt.plot(range(1, dcgan_epochs + 1), dcgan_g_losses, label="Generator Loss")
 plt.xlabel("Epoch")
 plt.ylabel("BCE Loss")
 plt.title("Training Loss DCGAN")
