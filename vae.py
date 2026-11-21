@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,8 +12,13 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from data_setup import train_loader, val_loader, test_loader, test_data, classes, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+set_seed(seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
@@ -75,10 +81,13 @@ for epoch in range(vae_epochs):
         vae_opt.step()
         train_loss += loss.item()
 
+    ep_time = time.time() - t_start
+    
     vae_enc.eval()
     vae_mu.eval()
     vae_logvar.eval()
     vae_dec.eval()
+    
     val_loss = 0.0
     with torch.no_grad():
         for imgs, _ in val_loader:
@@ -93,7 +102,6 @@ for epoch in range(vae_epochs):
             kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / x.size(0)
             val_loss += (bce + kl).item()
 
-    ep_time = time.time() - t_start
     avg_train = train_loss / len(train_loader)
     avg_val = val_loss / len(val_loader)
 
@@ -110,7 +118,7 @@ np.save("outputs/models/vae_losses.npy", np.array(vae_losses))
 
 psnr_metric = PeakSignalNoiseRatio(data_range=1.0).to(device)
 ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
-fid_metric = FrechetInceptionDistance(feature=2048).to(device)
+fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=False).to(device)
 
 vae_enc.eval()
 vae_mu.eval()
@@ -141,7 +149,7 @@ vae_ssim = ssim_metric.compute().item()
 vae_avg_time = np.mean(vae_times)
 
 # Generate gambar baru untuk hitung FID Score
-torch.manual_seed(seed)
+set_seed(seed)
 n_total = len(test_data)
 n_done = 0
 
@@ -174,7 +182,7 @@ with torch.no_grad():
 print("=== Evaluasi VAE ===")
 print("Dimensi Laten: 64")
 print(f"Training Time/Epoch: {vae_avg_time:.2f} detik")
-print(f"Latency: {vae_latency:.3f} ms")
+print(f"Latency Generation (prior->citra, batch 64): {vae_latency:.3f} ms")
 print(f"Test MSE: {vae_mse:.5f}")
 print(f"Test PSNR: {vae_psnr:.2f} dB")
 print(f"Test SSIM: {vae_ssim:.4f}")
@@ -214,14 +222,15 @@ plt.close()
 
 
 # Random Sampling
-torch.manual_seed(seed)
+set_seed(seed)
 with torch.no_grad():
-    vae_samples = vae_dec(torch.randn(16, 64, device=device)).view(16, 28, 28).cpu()
+    z_16 = torch.randn(16, 64, device=device)
+    vae_samples = vae_dec(z_16).view(16, 28, 28).cpu()
 
 fig, axes = plt.subplots(4, 4, figsize=(5.5, 5.5))
 for i in range(16):
     ax = axes[i // 4, i % 4]
-    ax.imshow(vae_samples[i], cmap="gray")
+    ax.imshow(vae_samples[i], cmap="gray", vmin=0, vmax=1)
     ax.axis("off")
 plt.suptitle("VAE Random Sampling")
 plt.tight_layout()
