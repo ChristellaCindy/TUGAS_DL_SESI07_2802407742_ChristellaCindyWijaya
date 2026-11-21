@@ -91,9 +91,18 @@ W1 = mlp_enc[0].weight.detach()
 W2 = mlp_enc[2].weight.detach()
 W3 = mlp_head.weight.detach()
 
-eye64 = torch.eye(64, device=device)
-ortho_err = (W3.T @ W3 - eye64).abs().max().item()
-print(f"Max Orthogonality Error: {ortho_err:.4f}")
+for name, W in [("W1 (256x784)", W1), ("W2 (64x256)", W2), ("W3 (10x64)", W3)]:
+    m = W.size(0)
+    eye_m = torch.eye(m, device=device)
+    row_ortho_err = (W @ W.T - eye_m).abs().max().item()
+    svals = torch.linalg.svdvals(W)
+    cond_num = (svals.max() / svals.min()).item()
+    print(f"{name} | Max ||W W^T - I||: {row_ortho_err:.4f} | "
+          f"Singular Values: [{svals.min():.3f}, {svals.max():.3f}] | "
+          f"Cond: {cond_num:.2f}")
+
+rank_w3 = torch.linalg.matrix_rank(W3).item()
+print(f"Rank efektif W3: {rank_w3}/64 (null space berdimensi {64 - rank_w3} -> non-invertible)")
 
 
 # Top-Down Weight Transposition
@@ -168,7 +177,7 @@ frozen_dec = nn.Sequential(
 mse_fn = nn.MSELoss()
 dec_opt = optim.Adam(frozen_dec.parameters(), lr=1e-3)
 
-dec_epochs = 15
+dec_epochs = 20
 for epoch in range(dec_epochs):
     frozen_dec.train()
     total_loss = 0
