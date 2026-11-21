@@ -43,7 +43,7 @@ sae_opt = optim.Adam(list(sae_enc.parameters()) + list(sae_dec.parameters()), lr
 lam = 1e-4
 sae_epochs = 20
 sae_losses = []
-sae_times = []
+sae_time = []
 
 for epoch in range(sae_epochs):
     t_start = time.time()
@@ -80,7 +80,7 @@ for epoch in range(sae_epochs):
     avg_val = val_mse / len(val_loader)
 
     sae_losses.append(avg_train)
-    sae_times.append(ep_time)
+    sae_time.append(ep_time)
     print(f"Epoch {epoch+1:02d}/{sae_epochs} | Train Loss: {avg_train:.5f} | Val MSE: {avg_val:.5f} | Time: {ep_time:.2f}s")
 
 torch.save(sae_enc.state_dict(), "outputs/models/sae_enc.pt")
@@ -114,7 +114,7 @@ with torch.no_grad():
 sae_mse = mse_sum / total_pixels
 sae_psnr = psnr_metric.compute().item()
 sae_ssim = ssim_metric.compute().item()
-sae_avg_time = np.mean(sae_times)
+sae_avg_time = np.mean(sae_time)
 
 all_h = torch.cat(sae_h_list, dim=0)
 sae_zero = (all_h == 0).float().mean().item() * 100
@@ -258,3 +258,54 @@ print(f"Test SSIM: {sae_relu_ssim:.4f}")
 print(f"Aktivasi tepat 0: {sae_relu_zero:.1f}%")
 print(f"Aktivasi hampir 0 (<0.05): {sae_relu_near_zero:.1f}%")
 print(f"Rata-rata ||h||_1: {sae_relu_l1:.2f}")
+
+# Mini-Sweep Lambda L1 (Linear Latent 64, 20 Epoch)
+sweep_results = [
+    (1e-4, sae_mse, sae_psnr, sae_ssim, sae_near_zero, sae_l1),
+]
+
+for lam_val in [0.0, 1e-5, 1e-3]:
+    set_seed(seed)
+    enc_sw = nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 64)).to(device)
+    dec_sw = nn.Sequential(nn.Linear(64, 256), nn.ReLU(), nn.Linear(256, 784), nn.Sigmoid()).to(device)
+    opt_sw = optim.Adam(list(enc_sw.parameters()) + list(dec_sw.parameters()), lr=1e-3)
+
+    for epoch in range(sae_epochs):
+        enc_sw.train()
+        dec_sw.train()
+        for imgs, _ in train_loader:
+            x = imgs.view(imgs.size(0), -1).to(device)
+            opt_sw.zero_grad()
+            h = enc_sw(x)
+            loss = mse_fn(dec_sw(h), x) + lam_val * h.abs().sum(dim=1).mean()
+            loss.backward()
+            opt_sw.step()
+
+    psnr_metric.reset()
+    ssim_metric.reset()
+    enc_sw.eval()
+    dec_sw.eval()
+    mse_s, n_pix, h_list = 0.0, 0, []
+    with torch.no_grad():
+        for imgs, _ in test_loader:
+            x_img = imgs.to(device)
+            h = enc_sw(x_img.view(x_img.size(0), -1))
+            recon_img = dec_sw(h).view(-1, 1, 28, 28)
+            mse_s += F.mse_loss(recon_img, x_img, reduction="sum").item()
+            n_pix += x_img.numel()
+            psnr_metric.update(recon_img, x_img)
+            ssim_metric.update(recon_img, x_img)
+            h_list.append(h)
+
+    all_h_sw = torch.cat(h_list, dim=0)
+    sw_mse = mse_s / n_pix
+    sw_psnr = psnr_metric.compute().item()
+    sw_ssim = ssim_metric.compute().item()
+    sw_nz = (all_h_sw.abs() < 0.05).float().mean().item() * 100
+    sw_l1 = all_h_sw.abs().sum(dim=1).mean().item()
+    sweep_results.append((lam_val, sw_mse, sw_psnr, sw_ssim, sw_nz, sw_l1))
+
+sweep_results.sort(key=lambda r: r[0])
+print("=== Mini-Sweep Lambda L1 (Linear Latent 64, 20 Epoch) ===")
+for lv, m, p, s, nz, l1 in sweep_results:
+    print(f"lambda={lv:<7g} | MSE: {m:.5f} | PSNR: {p:.2f} dB | SSIM: {s:.4f} | <0.05: {nz:5.1f}% | ||h||_1: {l1:6.2f}")
