@@ -1,5 +1,6 @@
 import os
 import math
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,6 +10,12 @@ from matplotlib.ticker import MaxNLocator
 from torchvision.utils import make_grid
 
 from data_setup import test_loader, test_data, classes, seed
+
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.makedirs("outputs/figs", exist_ok=True)
@@ -48,8 +55,7 @@ ae_dec = nn.Sequential(
 sae_enc = nn.Sequential(
     nn.Linear(784, 256),
     nn.ReLU(),
-    nn.Linear(256, 64),
-    nn.ReLU()
+    nn.Linear(256, 64)
 ).to(device)
 sae_dec = nn.Sequential(
     nn.Linear(64, 256),
@@ -96,11 +102,11 @@ dcgan_G = nn.Sequential(
 
 # DDPM
 T = 300
-beta = torch.linspace(1e-4, 0.035, T, device=device)
-alpha = 1.0 - beta
+betas = torch.linspace(1e-4, 0.035, T, device=device)
+alpha = 1.0 - betas
 alpha_bar = torch.cumprod(alpha, dim=0)
 
-def get_time_emb(t, dim=64):
+def get_time_embeded(t, dim=64):
     half = dim // 2
     freqs = torch.exp(-math.log(10000) * torch.arange(half, device=t.device) / half)
     args = t[:, None].float() * freqs[None, :]
@@ -143,7 +149,7 @@ class MiniUNet(nn.Module):
         self.t_u1 = nn.Linear(128, 64)
 
     def forward(self, x, t):
-        te = self.time_mlp(get_time_emb(t, 64))
+        te = self.time_mlp(get_time_embeded(t, 64))
 
         h1 = self.down1(x) + self.t_d1(te)[:, :, None, None]
         h2 = self.down2(self.pool1(h1)) + self.t_d2(te)[:, :, None, None]
@@ -218,6 +224,7 @@ plt.close()
 
 # Figur 2: Perbandingan Random Generative Sampling
 def sample_ddpm(n):
+    ddpm_net.eval()
     with torch.no_grad():
         x = torch.randn(n, 1, 28, 28, device=device)
         for i in reversed(range(T)):
@@ -225,7 +232,7 @@ def sample_ddpm(n):
             pred = ddpm_net(x, t)
             a = alpha[i]
             ab = alpha_bar[i]
-            b = beta[i]
+            b = betas[i]
 
             x = (1 / torch.sqrt(a)) * (x - ((1 - a) / torch.sqrt(1 - ab)) * pred)
             if i > 0:
@@ -234,16 +241,16 @@ def sample_ddpm(n):
         return (x.clamp(-1, 1) + 1) / 2
 
 with torch.no_grad():
-    torch.manual_seed(seed)
+    set_seed(seed)
     vae_samples = vae_dec(torch.randn(16, 64, device=device)).view(16, 28, 28).cpu()
 
-    torch.manual_seed(seed)
+    set_seed(seed)
     gan_samples = ((gan_G(torch.randn(16, z_dim, device=device)).view(16, 28, 28) + 1) / 2).clamp(0, 1).cpu()
 
-    torch.manual_seed(seed)
+    set_seed(seed)
     dcgan_samples = ((dcgan_G(torch.randn(16, z_dim, device=device)) + 1) / 2).clamp(0, 1).squeeze(1).cpu()
 
-torch.manual_seed(seed)
+set_seed(seed)
 ddpm_samples = sample_ddpm(16).squeeze(1).cpu()
 
 panels = [
@@ -282,22 +289,22 @@ z_all = torch.cat(z_all, dim=0)
 mu_z = z_all.mean(dim=0)
 std_z = z_all.std(dim=0)
 
-def norm_img(t):
-    t_min = t.min(dim=1, keepdim=True).values
-    t_max = t.max(dim=1, keepdim=True).values
-    return ((t - t_min) / (t_max - t_min + 1e-8)).view(-1, 28, 28).cpu()
-
 with torch.no_grad():
     z_mlp = mlp_enc(x_real)
 
+    # Proyeksi balik W^T dari vektor kelas y_c
     y_idx = torch.as_tensor(sample_labels, device=device, dtype=torch.long)
     y_c = F.one_hot(y_idx, num_classes=len(classes)).float()
-    x_wt_yc = norm_img(y_c @ w3 @ w2 @ w1)
+    x_wt_yc = torch.sigmoid(F.relu(F.relu(y_c @ w3) @ w2) @ w1).view(10, 28, 28).cpu()
 
-    x_wt_z = norm_img(z_mlp @ w2 @ w1)
+    # Proyeksi balik W^T dari fitur laten z_MLP
+    x_wt_z = torch.sigmoid(F.relu(z_mlp @ w2) @ w1).view(10, 28, 28).cpu()
+    
+    # Rekonstruksi Frozen Latent Decoder dari z_MLP
     x_frozen = frozen_dec(z_mlp).view(10, 28, 28).cpu()
-
-    torch.manual_seed(seed)
+    
+    # Random Prior Sampling z_rand
+    set_seed(seed)
     z_rand_mlp = mu_z + std_z * torch.randn(10, mu_z.numel(), device=device)
     x_mlp_rand = frozen_dec(z_rand_mlp).view(10, 28, 28).cpu()
 
@@ -348,7 +355,7 @@ x_b = x_real[idx_b:idx_b + 1]
 
 def pick_gan_pair(gen_model):
     gen_model.eval()
-    torch.manual_seed(seed)
+    set_seed(seed)
     with torch.no_grad():
         z_pool = torch.randn(512, z_dim, device=device)
         imgs = (gen_model(z_pool) + 1) / 2
@@ -379,10 +386,10 @@ dcgan_row = interp_decode(z_dc_a, z_dc_b, lambda z: ((dcgan_G(z) + 1) / 2).clamp
 
 print(f"Kelas A: {classes[cls_a]}")
 print(f"Kelas B: {classes[cls_b]}")
-print(f"Confidence Vanilla GAN -> {classes[cls_a]}: {p_gan_a*100:.1f}%")
-print(f"Confidence Vanilla GAN -> {classes[cls_b]}: {p_gan_b*100:.1f}%")
-print(f"Confidence DCGAN -> {classes[cls_a]}: {p_dc_a*100:.1f}%")
-print(f"Confidence DCGAN -> {classes[cls_b]}: {p_dc_b*100:.1f}%")
+print(f"Confidence Vanilla GAN >> {classes[cls_a]}: {p_gan_a*100:.1f}%")
+print(f"Confidence Vanilla GAN >> {classes[cls_b]}: {p_gan_b*100:.1f}%")
+print(f"Confidence DCGAN >> {classes[cls_a]}: {p_dc_a*100:.1f}%")
+print(f"Confidence DCGAN >> {classes[cls_b]}: {p_dc_b*100:.1f}%")
 
 interp_rows = [ae_row, sae_row, vae_row, gan_row, dcgan_row]
 interp_names = ["Vanilla AE", "Sparse AE", "VAE", "Vanilla GAN", "DCGAN"]
@@ -404,11 +411,10 @@ plt.close()
 
 # Figur 5a: Training Loss (6 Model)
 def load_loss(name):
-    for suffix in ["_losses.npy", "_loss.npy"]:
-        path = f"outputs/models/{name}{suffix}"
-        if os.path.exists(path):
-            return np.load(path)
-    raise FileNotFoundError(f"'{name}' tidak ditemukan")
+    path = f"outputs/models/{name}_losses.npy"
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"'{path}' tidak ditemukan")
+    return np.load(path)
 
 hist_ae = load_loss("ae")
 hist_sae = load_loss("sae")
@@ -465,7 +471,7 @@ plt.close()
 
 
 # Figur 5b: DDPM Denoising Trajectory
-torch.manual_seed(seed)
+set_seed(seed)
 n_traj = 4
 x = torch.randn(n_traj, 1, 28, 28, device=device)
 
@@ -475,13 +481,14 @@ snap_steps = sorted({int(r * (T - 1)) for r in ratio}, reverse=True)
 traj_imgs = [((x.clamp(-1, 1) + 1) / 2).squeeze(1).cpu()]
 traj_labels = [f"t = {T}\n(Noise)"]
 
+ddpm_net.eval()
 with torch.no_grad():
     for i in reversed(range(T)):
         t = torch.full((n_traj,), i, device=device, dtype=torch.long)
         pred = ddpm_net(x, t)
         a = alpha[i]
         ab = alpha_bar[i]
-        b = beta[i]
+        b = betas[i]
 
         x = (1 / torch.sqrt(a)) * (x - ((1 - a) / torch.sqrt(1 - ab)) * pred)
         if i > 0:
