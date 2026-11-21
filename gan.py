@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,8 +10,13 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from data_setup import train_loader, test_loader, test_data, seed
 
-torch.manual_seed(seed)
-torch.cuda.manual_seed_all(seed)
+def set_seed(s=42):
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
+set_seed(seed)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 os.makedirs("outputs/models", exist_ok=True)
@@ -18,7 +24,7 @@ os.makedirs("outputs/figs", exist_ok=True)
 
 z_dim = 100
 
-#Generator
+# Generator
 gan_G = nn.Sequential(
     nn.Linear(z_dim, 256),
     nn.LeakyReLU(0.2),
@@ -48,7 +54,7 @@ opt_D = optim.Adam(gan_D.parameters(), lr=2e-4, betas=(0.5, 0.999))
 gan_epochs = 30
 gan_g_losses = []
 gan_d_losses = []
-gan_times = []
+gan_time = []
 
 for epoch in range(gan_epochs):
     t_start = time.time()
@@ -91,9 +97,8 @@ for epoch in range(gan_epochs):
 
     gan_d_losses.append(avg_d)
     gan_g_losses.append(avg_g)
-    gan_times.append(ep_time)
+    gan_time.append(ep_time)
     print(f"Epoch {epoch+1:02d}/{gan_epochs} | D Loss: {avg_d:.4f} | G Loss: {avg_g:.4f} | Time: {ep_time:.2f}s")
-
 
 torch.save(gan_G.state_dict(), "outputs/models/gan_G.pt")
 torch.save(gan_D.state_dict(), "outputs/models/gan_D.pt")
@@ -103,7 +108,7 @@ np.save("outputs/models/gan_d_losses.npy", np.array(gan_d_losses))
 
 
 
-fid_metric = FrechetInceptionDistance(feature=2048).to(device)
+fid_metric = FrechetInceptionDistance(feature=2048, reset_real_features=False).to(device)
 gan_G.eval()
 
 with torch.no_grad():
@@ -112,7 +117,7 @@ with torch.no_grad():
         fid_metric.update(real_rgb, real=True)
 
 # Generate sampel baru untuk hitung FID Score
-torch.manual_seed(seed)
+set_seed(seed)
 n_total = len(test_data)
 n_done = 0
 with torch.no_grad():
@@ -125,19 +130,19 @@ with torch.no_grad():
         n_done += bs
 
 gan_fid = fid_metric.compute().item()
-gan_avg_time = np.mean(gan_times)
+gan_avg_time = np.mean(gan_time)
 
 # inference latency single-pass
-z_64 = torch.randn(64, z_dim, device=device)
+z_gan_64 = torch.randn(64, z_dim, device=device)
 with torch.no_grad():
     for _ in range(10):
-        _ = gan_G(z_64)
+        _ = gan_G(z_gan_64)
     if device.type == "cuda":
         torch.cuda.synchronize()
 
     t0 = time.time()
     for _ in range(100):
-        _ = gan_G(z_64)
+        _ = gan_G(z_gan_64)
     if device.type == "cuda":
         torch.cuda.synchronize()
     gan_latency = ((time.time() - t0) / 100) * 1000
@@ -145,7 +150,7 @@ with torch.no_grad():
 print(" === Evaluasi Vanilla GAN ===")
 print("Dimensi Laten: 100 (Prior Noise)")
 print(f"Training Time/Epoch: {gan_avg_time:.2f} detik")
-print(f"Latency: {gan_latency:.3f} ms")
+print(f"Latency Generation (prior->citra, batch 64): {gan_latency:.3f} ms")
 print("Test MSE: N/A (Tanpa Encoder)")
 print("Test PSNR: N/A")
 print("Test SSIM: N/A")
@@ -153,7 +158,7 @@ print(f"FID Score: {gan_fid:.2f}")
 
 
 
-torch.manual_seed(seed)
+set_seed(seed)
 with torch.no_grad():
     z_16 = torch.randn(16, z_dim, device=device)
     gan_samples = ((gan_G(z_16).view(16, 28, 28) + 1) / 2).clamp(0, 1).cpu()
