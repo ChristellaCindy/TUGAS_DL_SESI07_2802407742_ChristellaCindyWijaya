@@ -1,12 +1,6 @@
 # TUGAS_DL_SESI07_2802407742_ChristellaCindyWijaya
 Studi Komparatif Empiris Model Generatif: Autoencoder (Vanilla &amp; Sparse), GAN (Vanilla &amp; DCGAN), VAE, dan  DDPM disertai Pembuktian Batasan Teoretis Model Klasifikasi untuk Image Generation 
 
-Nama: Christella Cindy Wijaya
-
-NIM: 2802407742
-
-Kelas: LB01 - Deep Learning
-
 Repositori ini berisi implementasi berbasis PyTorch untuk eksperimen MLP Classifier serta enam arsitektur model generatif (**Vanilla AE, Sparse AE, VAE, Vanilla GAN, DCGAN, dan DDPM**) menggunakan dataset **Fashion-MNIST**.
 
 **Identitas**
@@ -15,7 +9,7 @@ Repositori ini berisi implementasi berbasis PyTorch untuk eksperimen MLP Classif
 
 * **NIM:** 2802407742
 
-
+* **Kelas:** LB01 - Deep Learning
 
 ---
 
